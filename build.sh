@@ -233,9 +233,12 @@ if [[ "${FORMAT_CHECK}" == "ON" ]]; then
   CODE_QUALITY="ON"
 fi
 
+CMAKE_INSTALL_PREFIX="${CMAKE_INSTALL_PREFIX:-/usr/local}"
+
 cmake_args=(
   -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
   -DAASDK_TEST="${BUILD_TESTS}"
+  -DCMAKE_INSTALL_PREFIX="${CMAKE_INSTALL_PREFIX}"
 )
 
 # Pass architecture from CI env (ARCH_ID) or TARGET_ARCH to CMake
@@ -345,6 +348,26 @@ fi
 
 if [[ "${INSTALL_AFTER_BUILD}" == "ON" ]]; then
   log "Installing"
+  # Every build produces uniquely-versioned .so files (date+git hash baked
+  # into the SONAME), so `cmake --install` only ever adds files and never
+  # removes what a previous build/checkout left behind. Clear old versions
+  # from the install dir first so stale libraries can't linger and get
+  # picked up by ldconfig instead of the one this build just produced.
+  install_lib_dir="${CMAKE_INSTALL_PREFIX}/lib"
+  if [[ -d "${install_lib_dir}" ]]; then
+    log "Removing stale libaasdk/libaap_protobuf files from ${install_lib_dir}"
+    shopt -s nullglob
+    stale=("${install_lib_dir}"/libaasdk.so.* "${install_lib_dir}"/libaap_protobuf.so.*)
+    shopt -u nullglob
+    if [[ "${#stale[@]}" -gt 0 ]]; then
+      if [[ "$(id -u)" -eq 0 ]]; then
+        rm -f "${stale[@]}"
+      else
+        sudo rm -f "${stale[@]}"
+      fi
+    fi
+  fi
+
   if [[ "$(id -u)" -eq 0 ]]; then
     cmake --install "${BUILD_DIR}"
     ldconfig || true
