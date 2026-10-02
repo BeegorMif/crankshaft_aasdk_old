@@ -73,6 +73,7 @@ namespace aasdk::channel::navigationstatus {
         break;
       case aap_protobuf::service::navigationstatus::NavigationStatusMessageId::INSTRUMENT_CLUSTER_NAVIGATION_STATUS:
         AASDK_LOG_CHANNEL_NAVIGATION(debug, "MESSAGE_NAVIGATION_STATUS");
+        this->receive(std::move(eventHandler));
         break;
       case aap_protobuf::service::navigationstatus::NavigationStatusMessageId::INSTRUMENT_CLUSTER_NAVIGATION_STATE:
         this->handleNavigationState(payload, std::move(eventHandler));
