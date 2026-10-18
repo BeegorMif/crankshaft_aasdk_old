@@ -16,6 +16,7 @@
 // along with aasdk. If not, see <http://www.gnu.org/licenses/>.#include <boost/endian/conversion.hpp>
 #include <aasdk/Error/Error.hpp>
 #include <aasdk/Messenger/Messenger.hpp>
+#include <aasdk/Messenger/Capture.hpp>
 #include <aasdk/Common/Log.hpp>
 #include <aasdk/Common/ModernLogger.hpp>
 
@@ -40,20 +41,13 @@ namespace aasdk::messenger {
       } else {
         AASDK_LOG_MESSENGER(debug, "Push promise to queue.");
         channelReceivePromiseQueue_.push(channelId, std::move(promise));
-
-        if (channelReceivePromiseQueue_.size() == 1) {
-          AASDK_LOG_MESSENGER(debug, "Processing promise.");
-          auto inStreamPromise = ReceivePromise::defer(receiveStrand_);
-          inStreamPromise->then(
-              std::bind(&Messenger::inStreamMessageHandler, this->shared_from_this(), std::placeholders::_1),
-              std::bind(&Messenger::rejectReceivePromiseQueue, this->shared_from_this(), std::placeholders::_1));
-          messageInStream_->startReceive(std::move(inStreamPromise));
-        }
+        this->startInStreamReceive();
       }
     });
   }
 
   void Messenger::enqueueSend(Message::Pointer message, SendPromise::Pointer promise) {
+    capture::record("out", *message);
     sendStrand_.dispatch(
         [this, self = this->shared_from_this(), message = std::move(message), promise = std::move(promise)]() mutable {
           channelSendPromiseQueue_.emplace_back(std::make_pair(std::move(message), std::move(promise)));
@@ -64,7 +58,22 @@ namespace aasdk::messenger {
         });
   }
 
+  void Messenger::startInStreamReceive() {
+    if (inStreamReceiving_) {
+      return;
+    }
+    AASDK_LOG_MESSENGER(debug, "Processing promise.");
+    inStreamReceiving_ = true;
+    auto inStreamPromise = ReceivePromise::defer(receiveStrand_);
+    inStreamPromise->then(
+        std::bind(&Messenger::inStreamMessageHandler, this->shared_from_this(), std::placeholders::_1),
+        std::bind(&Messenger::rejectReceivePromiseQueue, this->shared_from_this(), std::placeholders::_1));
+    messageInStream_->startReceive(std::move(inStreamPromise));
+  }
+
   void Messenger::inStreamMessageHandler(Message::Pointer message) {
+    inStreamReceiving_ = false;
+    capture::record("in", *message);
     auto channelId = message->getChannelId();
     AASDK_LOG(debug) << "[Messenger::inStreamMessageHandler] Handling message for ChannelId "
                      << channelIdToString(message->getChannelId());
@@ -81,27 +90,28 @@ namespace aasdk::messenger {
 
     if (!channelReceivePromiseQueue_.empty()) {
       AASDK_LOG_MESSENGER(debug, "Initiate queue for receiving.");
-      auto inStreamPromise = ReceivePromise::defer(receiveStrand_);
-      inStreamPromise->then(
-          std::bind(&Messenger::inStreamMessageHandler, this->shared_from_this(), std::placeholders::_1),
-          std::bind(&Messenger::rejectReceivePromiseQueue, this->shared_from_this(), std::placeholders::_1));
-      messageInStream_->startReceive(std::move(inStreamPromise));
+      this->startInStreamReceive();
     }
   }
 
   void Messenger::doSend() {
     auto queueElementIter = channelSendPromiseQueue_.begin();
     auto outStreamPromise = SendPromise::defer(sendStrand_);
-    outStreamPromise->then(std::bind(&Messenger::outStreamMessageHandler, this->shared_from_this(), queueElementIter),
+    outStreamPromise->then(std::bind(&Messenger::outStreamMessageHandler, this->shared_from_this(),
+                                     queueElementIter->second),
                            std::bind(&Messenger::rejectSendPromiseQueue, this->shared_from_this(),
                                      std::placeholders::_1));
 
     messageOutStream_->stream(std::move(queueElementIter->first), std::move(outStreamPromise));
   }
 
-  void Messenger::outStreamMessageHandler(ChannelSendQueue::iterator queueElement) {
-    queueElement->second->resolve();
-    channelSendPromiseQueue_.erase(queueElement);
+  void Messenger::outStreamMessageHandler(SendPromise::Pointer promise) {
+    // stop() may have rejected and removed the message while it was being sent
+    if (channelSendPromiseQueue_.empty() || channelSendPromiseQueue_.front().second != promise) {
+      return;
+    }
+    promise->resolve();
+    channelSendPromiseQueue_.pop_front();
 
     if (!channelSendPromiseQueue_.empty()) {
       this->doSend();
@@ -109,6 +119,7 @@ namespace aasdk::messenger {
   }
 
   void Messenger::rejectReceivePromiseQueue(const error::Error &e) {
+    inStreamReceiving_ = false;
     while (!channelReceivePromiseQueue_.empty()) {
       channelReceivePromiseQueue_.pop()->reject(e);
     }
@@ -123,8 +134,15 @@ namespace aasdk::messenger {
   }
 
   void Messenger::stop() {
+    // Pending receives and sends end with OPERATION_ABORTED, so no handler is called later with
+    // a transport error for a session that is already shut down (#13, upstream opencardev/aasdk#67)
     receiveStrand_.dispatch([this, self = this->shared_from_this()]() {
       channelReceiveMessageQueue_.clear();
+      this->rejectReceivePromiseQueue(error::Error(error::ErrorCode::OPERATION_ABORTED));
+    });
+
+    sendStrand_.dispatch([this, self = this->shared_from_this()]() {
+      this->rejectSendPromiseQueue(error::Error(error::ErrorCode::OPERATION_ABORTED));
     });
   }
 

@@ -71,7 +71,21 @@ namespace aasdk::channel::phonestatus {
         this->handleChannelOpenRequest(payload, std::move(eventHandler));
         break;
       case aap_protobuf::service::phonestatus::PhoneStatusMessageId::PHONE_STATUS:
+        this->handlePhoneStatus(payload, std::move(eventHandler));
+        break;
       case aap_protobuf::service::phonestatus::PhoneStatusMessageId::PHONE_STATUS_INPUT:
+        // not implemented yet: keep receiving
+        AASDK_LOG(info) << "[PhoneStatusService] Message Id not implemented: " << messageId.getId();
+        this->receive(std::move(eventHandler));
+        break;
+      case aap_protobuf::service::control::message::ControlMessageType::MESSAGE_CHANNEL_CLOSE_NOTIFICATION: {
+        aap_protobuf::service::control::message::ChannelCloseNotification notification;
+        notification.ParseFromArray(payload.cdata, payload.size);
+        AASDK_LOG(info) << "[" << messenger::channelIdToString(channelId_) << "] channel close notification";
+        eventHandler->onChannelCloseNotification(notification);
+        this->receive(std::move(eventHandler));
+        break;
+      }
       default:
         AASDK_LOG(error) << "[PhoneStatusService] Message Id not Handled: " << messageId.getId();
         this->receive(std::move(eventHandler));
@@ -87,6 +101,18 @@ namespace aasdk::channel::phonestatus {
       eventHandler->onChannelOpenRequest(request);
     } else {
       eventHandler->onChannelError(error::Error(error::ErrorCode::PARSE_PAYLOAD));
+    }
+  }
+
+  void PhoneStatusService::handlePhoneStatus(const common::DataConstBuffer &payload,
+                                             IPhoneStatusServiceEventHandler::Pointer eventHandler) {
+    AASDK_LOG_CHANNEL_PHONE_STATUS(debug, "handlePhoneStatus()");
+    aap_protobuf::service::phonestatus::message::PhoneStatus status;
+    if (status.ParseFromArray(payload.cdata, payload.size)) {
+      eventHandler->onPhoneStatus(status);
+    } else {
+      eventHandler->onChannelError(error::Error(error::ErrorCode::PARSE_PAYLOAD));
+      AASDK_LOG(error) << "[PhoneStatusService] encountered error with message: " << dump(payload);
     }
   }
 }

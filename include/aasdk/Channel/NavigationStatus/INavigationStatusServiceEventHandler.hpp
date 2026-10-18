@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include <aasdk/Common/Data.hpp>
+#include <aap_protobuf/service/control/message/ChannelCloseNotification.pb.h>
 #include <aap_protobuf/service/control/message/ChannelOpenRequest.pb.h>
 #include <aap_protobuf/service/navigationstatus/message/NavigationStatus.pb.h>
 #include <aap_protobuf/service/navigationstatus/message/NavigationState.pb.h>
@@ -40,6 +42,22 @@ namespace aasdk::channel::navigationstatus {
     virtual void onNavigationState(const aap_protobuf::service::navigationstatus::message::NavigationState &navState) = 0;
 
     virtual void onCurrentPosition(const aap_protobuf::service::navigationstatus::message::NavigationCurrentPosition &currentPosition) = 0;
+
+
+    // The phone closes this channel (protocol 1.6+, #7). The default does nothing; the service keeps
+
+    // receiving by itself, do not call receive() in an override.
+
+    virtual void onChannelCloseNotification(const aap_protobuf::service::control::message::ChannelCloseNotification &) {}
+
+
+    // Sent by the phone with protocol >= 5.1 when navigation starts; payload not decoded yet (openhu#54).
+
+    // Default: nothing, the service keeps receiving by itself.
+
+    virtual void onVehicleEnergyForecast(const common::DataConstBuffer &) {}
+
+    virtual void onStatusUpdate(const aap_protobuf::service::navigationstatus::message::NavigationStatus &navStatus) = 0;
 
   };
 
