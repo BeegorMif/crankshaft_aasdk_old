@@ -11,12 +11,7 @@ if(DEFINED LIBRARY_BUILD_MAJOR_RELEASE AND DEFINED LIBRARY_BUILD_MINOR_RELEASE A
     set(AAP_VERSION_MINOR ${LIBRARY_BUILD_MINOR_RELEASE}) 
     set(AAP_VERSION_PATCH ${LIBRARY_BUILD_PATCH_RELEASE})
     
-    # Use parent project's version string if available
-    if(DEFINED LIBRARY_VERSION_STRING)
-        set(LIBRARY_BUILD_VERSION_STRING ${LIBRARY_VERSION_STRING})
-    else()
-        set(LIBRARY_BUILD_VERSION_STRING "${AAP_VERSION_MAJOR}.${AAP_VERSION_MINOR}.${AAP_VERSION_PATCH}")
-    endif()
+    set(LIBRARY_BUILD_VERSION_STRING "${AAP_VERSION_MAJOR}.${AAP_VERSION_MINOR}.${AAP_VERSION_PATCH}")
 else()
     # Fallback to original versioning for standalone builds
     set(LIBRARY_BUILD_DATE "20241121")    # Binary Release Build Date
@@ -49,7 +44,13 @@ else()
     # Linux specific command
     find_path(Protobuf_INCLUDE_DIR google/protobuf/message.h PATHS /usr/include /usr/local/include)
     find_library(Protobuf_LIBRARY protobuf PATHS /usr/lib /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu /usr/lib/arm-linux-gnueabihf /usr/local/lib)
-    find_program(PROTOBUF_PROTOC_EXECUTABLE protoc)
+    # FindProtobuf uses Protobuf_PROTOC_EXECUTABLE; an empty cached value (left by earlier versions of this file)
+    # would make every reconfigure fail with "protoc executable not found"
+    if(NOT Protobuf_PROTOC_EXECUTABLE)
+        unset(Protobuf_PROTOC_EXECUTABLE CACHE)
+    endif()
+    find_program(Protobuf_PROTOC_EXECUTABLE protoc)
+    set(PROTOBUF_PROTOC_EXECUTABLE "${Protobuf_PROTOC_EXECUTABLE}")
     message(STATUS "Found Protobuf include: ${Protobuf_INCLUDE_DIR}")
     message(STATUS "Found Protobuf library: ${Protobuf_LIBRARY}")
     message(STATUS "Found protoc: ${PROTOBUF_PROTOC_EXECUTABLE}")
@@ -135,8 +136,8 @@ install(EXPORT aap_protobufTargets
 include(CMakePackageConfigHelpers)
 write_basic_package_version_file(
         "${CMAKE_CURRENT_BINARY_DIR}/aap_protobufConfigVersion.cmake"
-        VERSION 1.0
-        COMPATIBILITY AnyNewerVersion
+        VERSION ${LIBRARY_BUILD_VERSION_STRING}
+        COMPATIBILITY SameMajorVersion
 )
 
 configure_package_config_file(Config.cmake.in

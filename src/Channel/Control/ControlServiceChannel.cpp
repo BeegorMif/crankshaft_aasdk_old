@@ -15,6 +15,8 @@
 // You should have received a copy of the GNU General Public License
 // along with aasdk. If not, see <http://www.gnu.org/licenses/>.
 
+#include <cstdlib>
+#include <cstdio>
 #include <boost/endian/conversion.hpp>
 #include <aasdk/Version.hpp>
 #include <aasdk/IO/PromiseLink.hpp>
@@ -27,6 +29,20 @@
 namespace aasdk {
   namespace channel {
     namespace control {
+
+      namespace {
+        // AASDK_VERSION=<major>.<minor> asks the phone for another protocol version, for captures of what
+        // newer versions change (#14). The phone selects the version it uses in its response.
+        std::pair<uint16_t, uint16_t> requestedVersion() {
+          const char *value = std::getenv("AASDK_VERSION");
+          unsigned major = 0, minor = 0;
+          if (value != nullptr && std::sscanf(value, "%u.%u", &major, &minor) == 2 && major <= 0xFFFF && minor <= 0xFFFF) {
+            AASDK_LOG(info) << "[ControlServiceChannel] AASDK_VERSION: requesting version " << major << "." << minor;
+            return {static_cast<uint16_t>(major), static_cast<uint16_t>(minor)};
+          }
+          return {AASDK_MAJOR, AASDK_MINOR};
+        }
+      }
 
       ControlServiceChannel::ControlServiceChannel(boost::asio::io_service::strand &strand,
                                                    messenger::IMessenger::Pointer messenger)
@@ -44,8 +60,9 @@ namespace aasdk {
                 aap_protobuf::service::control::message::ControlMessageType::MESSAGE_VERSION_REQUEST).getData());
 
         common::Data versionBuffer(4, 0);
-        reinterpret_cast<uint16_t &>(versionBuffer[0]) = boost::endian::native_to_big(AASDK_MAJOR);
-        reinterpret_cast<uint16_t &>(versionBuffer[2]) = boost::endian::native_to_big(AASDK_MINOR);
+        const auto version = requestedVersion();
+        boost::endian::store_big_u16(&versionBuffer[0], version.first);
+        boost::endian::store_big_u16(&versionBuffer[2], version.second);
         message->insertPayload(versionBuffer);
         this->send(std::move(message), std::move(promise));
       }
@@ -174,6 +191,74 @@ namespace aasdk {
         this->send(std::move(message), std::move(promise));
       }
 
+
+      void ControlServiceChannel::sendServiceDiscoveryUpdate(const aap_protobuf::service::control::message::ServiceDiscoveryUpdate &update,
+                                       SendPromise::Pointer promise) {
+        AASDK_LOG_CHANNEL_CONTROL(debug, "sendServiceDiscoveryUpdate()");
+        this->sendControlMessage(aap_protobuf::service::control::message::ControlMessageType::MESSAGE_SERVICE_DISCOVERY_UPDATE, update, std::move(promise));
+      }
+
+      void ControlServiceChannel::sendCallAvailabilityStatus(const aap_protobuf::service::control::message::CallAvailabilityStatus &status,
+                                       SendPromise::Pointer promise) {
+        AASDK_LOG_CHANNEL_CONTROL(debug, "sendCallAvailabilityStatus()");
+        this->sendControlMessage(aap_protobuf::service::control::message::ControlMessageType::MESSAGE_CALL_AVAILABILITY_STATUS, status, std::move(promise));
+      }
+
+      void ControlServiceChannel::sendCarConnectedDevicesRequest(const aap_protobuf::service::control::message::CarConnectedDevicesRequest &request,
+                                       SendPromise::Pointer promise) {
+        AASDK_LOG_CHANNEL_CONTROL(debug, "sendCarConnectedDevicesRequest()");
+        this->sendControlMessage(aap_protobuf::service::control::message::ControlMessageType::MESSAGE_CAR_CONNECTED_DEVICES_REQUEST, request, std::move(promise));
+      }
+
+      void ControlServiceChannel::sendCarConnectedDevices(const aap_protobuf::service::control::message::CarConnectedDevices &devices,
+                                       SendPromise::Pointer promise) {
+        AASDK_LOG_CHANNEL_CONTROL(debug, "sendCarConnectedDevices()");
+        this->sendControlMessage(aap_protobuf::service::control::message::ControlMessageType::MESSAGE_CAR_CONNECTED_DEVICES_RESPONSE, devices, std::move(promise));
+      }
+
+      void ControlServiceChannel::sendUserSwitchRequest(const aap_protobuf::service::control::message::UserSwitchRequest &request,
+                                       SendPromise::Pointer promise) {
+        AASDK_LOG_CHANNEL_CONTROL(debug, "sendUserSwitchRequest()");
+        this->sendControlMessage(aap_protobuf::service::control::message::ControlMessageType::MESSAGE_USER_SWITCH_REQUEST, request, std::move(promise));
+      }
+
+      void ControlServiceChannel::sendUserSwitchResponse(const aap_protobuf::service::control::message::UserSwitchResponse &response,
+                                       SendPromise::Pointer promise) {
+        AASDK_LOG_CHANNEL_CONTROL(debug, "sendUserSwitchResponse()");
+        this->sendControlMessage(aap_protobuf::service::control::message::ControlMessageType::MESSAGE_USER_SWITCH_RESPONSE, response, std::move(promise));
+      }
+
+      void ControlServiceChannel::sendChannelCloseNotification(const aap_protobuf::service::control::message::ChannelCloseNotification &notification,
+                                       SendPromise::Pointer promise) {
+        AASDK_LOG_CHANNEL_CONTROL(debug, "sendChannelCloseNotification()");
+        this->sendControlMessage(aap_protobuf::service::control::message::ControlMessageType::MESSAGE_CHANNEL_CLOSE_NOTIFICATION, notification, std::move(promise));
+      }
+
+      void ControlServiceChannel::sendControlMessage(uint16_t messageId, const google::protobuf::Message &payload,
+                                                     SendPromise::Pointer promise) {
+        auto message(std::make_shared<messenger::Message>(channelId_, messenger::EncryptionType::ENCRYPTED,
+                                                          messenger::MessageType::SPECIFIC));
+        message->insertPayload(messenger::MessageId(messageId).getData());
+        message->insertPayload(payload);
+        this->send(std::move(message), std::move(promise));
+      }
+
+      template<typename Proto>
+      void ControlServiceChannel::handleNotification(const common::DataConstBuffer &payload,
+                                                     IControlServiceChannelEventHandler::Pointer eventHandler,
+                                                     void (IControlServiceChannelEventHandler::*callback)(const Proto &),
+                                                     const char *name) {
+        Proto message;
+        if (message.ParseFromArray(payload.cdata, payload.size)) {
+          AASDK_LOG(info) << "[ControlServiceChannel] " << name << ": " << message.ShortDebugString();
+          ((*eventHandler).*callback)(message);
+        } else {
+          // informational: a message we cannot read must not end the session
+          AASDK_LOG(warning) << "[ControlServiceChannel] " << name << ": payload not readable (" << payload.size << " bytes)";
+        }
+        this->receive(std::move(eventHandler));
+      }
+
       void ControlServiceChannel::receive(IControlServiceChannelEventHandler::Pointer eventHandler) {
         AASDK_LOG_CHANNEL_CONTROL(debug, "receive()");
         auto receivePromise = messenger::ReceivePromise::defer(strand_);
@@ -228,6 +313,45 @@ namespace aasdk {
           case aap_protobuf::service::control::message::ControlMessageType::MESSAGE_BYEBYE_RESPONSE:
             this->handleShutdownResponse(payload, std::move(eventHandler));
             break;
+          case aap_protobuf::service::control::message::ControlMessageType::MESSAGE_CHANNEL_CLOSE_NOTIFICATION:
+            this->handleNotification<aap_protobuf::service::control::message::ChannelCloseNotification>(payload, std::move(eventHandler),
+                &IControlServiceChannelEventHandler::onChannelCloseNotification, "MESSAGE_CHANNEL_CLOSE_NOTIFICATION");
+            break;
+          case aap_protobuf::service::control::message::ControlMessageType::MESSAGE_SERVICE_DISCOVERY_UPDATE:
+            this->handleNotification<aap_protobuf::service::control::message::ServiceDiscoveryUpdate>(payload, std::move(eventHandler),
+                &IControlServiceChannelEventHandler::onServiceDiscoveryUpdate, "MESSAGE_SERVICE_DISCOVERY_UPDATE");
+            break;
+          case aap_protobuf::service::control::message::ControlMessageType::MESSAGE_CALL_AVAILABILITY_STATUS:
+            this->handleNotification<aap_protobuf::service::control::message::CallAvailabilityStatus>(payload, std::move(eventHandler),
+                &IControlServiceChannelEventHandler::onCallAvailabilityStatus, "MESSAGE_CALL_AVAILABILITY_STATUS");
+            break;
+          case aap_protobuf::service::control::message::ControlMessageType::MESSAGE_CAR_CONNECTED_DEVICES_REQUEST:
+            this->handleNotification<aap_protobuf::service::control::message::CarConnectedDevicesRequest>(payload, std::move(eventHandler),
+                &IControlServiceChannelEventHandler::onCarConnectedDevicesRequest, "MESSAGE_CAR_CONNECTED_DEVICES_REQUEST");
+            break;
+          case aap_protobuf::service::control::message::ControlMessageType::MESSAGE_CAR_CONNECTED_DEVICES_RESPONSE:
+            this->handleNotification<aap_protobuf::service::control::message::CarConnectedDevices>(payload, std::move(eventHandler),
+                &IControlServiceChannelEventHandler::onCarConnectedDevices, "MESSAGE_CAR_CONNECTED_DEVICES_RESPONSE");
+            break;
+          case aap_protobuf::service::control::message::ControlMessageType::MESSAGE_USER_SWITCH_REQUEST:
+            this->handleNotification<aap_protobuf::service::control::message::UserSwitchRequest>(payload, std::move(eventHandler),
+                &IControlServiceChannelEventHandler::onUserSwitchRequest, "MESSAGE_USER_SWITCH_REQUEST");
+            break;
+          case aap_protobuf::service::control::message::ControlMessageType::MESSAGE_USER_SWITCH_RESPONSE:
+            this->handleNotification<aap_protobuf::service::control::message::UserSwitchResponse>(payload, std::move(eventHandler),
+                &IControlServiceChannelEventHandler::onUserSwitchResponse, "MESSAGE_USER_SWITCH_RESPONSE");
+            break;
+          case aap_protobuf::service::control::message::ControlMessageType::MESSAGE_UNEXPECTED_MESSAGE:
+            AASDK_LOG(warning) << "[ControlServiceChannel] the phone reports an unexpected message of ours ("
+                               << payload.size << " bytes)";
+            eventHandler->onUnexpectedMessage(payload);
+            this->receive(std::move(eventHandler));
+            break;
+          case aap_protobuf::service::control::message::ControlMessageType::MESSAGE_FRAMING_ERROR:
+            // the phone could not read our framing: the session cannot go on
+            AASDK_LOG(error) << "[ControlServiceChannel] the phone reports a framing error";
+            eventHandler->onChannelError(error::Error(error::ErrorCode::MESSENGER_PEER_FRAMING_ERROR));
+            break;
           default:
             AASDK_LOG(error) << "[ControlServiceChannel] Message Id not Handled: " << messageId.getId();
             this->receive(std::move(eventHandler));
@@ -239,15 +363,41 @@ namespace aasdk {
                                                         IControlServiceChannelEventHandler::Pointer eventHandler) {
         AASDK_LOG_CHANNEL_CONTROL(debug, "handleVersionResponse()");
 
-        //const size_t elements = payload.size / sizeof(uint16_t);
-        const uint16_t *versionResponse = reinterpret_cast<const uint16_t *>(payload.cdata);
+        // major, minor and status, each a big-endian uint16 (#5); VersionResponseOptions may follow
+        if (payload.size < 3 * sizeof(uint16_t)) {
+          AASDK_LOG(error) << "[ControlServiceChannel] Version response of " << payload.size << " bytes, expected 6";
+          eventHandler->onChannelError(error::Error(error::ErrorCode::PARSE_PAYLOAD));
+          return;
+        }
 
-        aap_protobuf::shared::MessageStatus status = static_cast<aap_protobuf::shared::MessageStatus>(boost::endian::big_to_native(
-            versionResponse[2]));
-        AASDK_LOG(info) << "[ControlServiceChannel] Handling Version - Major: " << versionResponse[0] << " Minor: "
-                        << versionResponse[1] << "Status: " << status;
+        if (versionResponseReceived_) {
+          // a late answer to an earlier version request, the handshake is already running
+          AASDK_LOG(warning) << "[ControlServiceChannel] ignoring another version response";
+          this->receive(std::move(eventHandler));
+          return;
+        }
+        versionResponseReceived_ = true;
 
-        eventHandler->onVersionResponse(versionResponse[0], versionResponse[1], status);
+        const uint16_t major = boost::endian::load_big_u16(payload.cdata);
+        const uint16_t minor = boost::endian::load_big_u16(payload.cdata + 2);
+        // MessageStatus is signed: 0xFFFF is STATUS_NO_COMPATIBLE_VERSION (-1)
+        const auto status = static_cast<aap_protobuf::shared::MessageStatus>(
+            static_cast<int16_t>(boost::endian::load_big_u16(payload.cdata + 4)));
+        AASDK_LOG(info) << "[ControlServiceChannel] Handling Version - Major: " << major << " Minor: " << minor
+                        << " Status: " << status;
+
+        if (payload.size > 3 * sizeof(uint16_t)) {
+          aap_protobuf::service::control::message::VersionResponseOptions options;
+          if (options.ParseFromArray(payload.cdata + 6, static_cast<int>(payload.size - 6))) {
+            AASDK_LOG(info) << "[ControlServiceChannel] version response options: " << options.ShortDebugString();
+            eventHandler->onVersionResponseOptions(options);
+          } else {
+            AASDK_LOG(warning) << "[ControlServiceChannel] version response: " << payload.size - 6
+                               << " trailing bytes are no VersionResponseOptions";
+          }
+        }
+
+        eventHandler->onVersionResponse(major, minor, status);
       }
 
       void ControlServiceChannel::handleServiceDiscoveryRequest(const common::DataConstBuffer &payload,

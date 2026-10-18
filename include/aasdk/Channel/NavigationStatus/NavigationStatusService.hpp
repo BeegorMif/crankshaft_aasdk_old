@@ -52,6 +52,8 @@ namespace aasdk::channel::navigationstatus {
     void handleCurrentPosition(const common::DataConstBuffer &payload,
                                INavigationStatusServiceEventHandler::Pointer eventHandler);
 
+    void handleDistanceEvent(const common::DataConstBuffer &payload,
+                             INavigationStatusServiceEventHandler::Pointer eventHandler);
   };
 
 }
